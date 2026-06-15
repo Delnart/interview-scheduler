@@ -1,0 +1,79 @@
+# Render Blueprint — provisions everything in one go:
+#   - managed PostgreSQL
+#   - Node API (web service)
+#   - React static site (serves the app, proxies /api to the API)
+#
+# Deploy: push this repo to GitHub, then Render Dashboard → New + → Blueprint →
+# pick the repo → Apply. Fill in the secrets marked `sync: false` afterwards.
+#
+# NOTE: Render's FREE PostgreSQL is deleted ~30 days after creation. For a DB that
+# lasts, either upgrade the database, or create a free Neon DB and replace the
+# DATABASE_URL block below with `value: <your neon url>` + set DATABASE_SSL=true.
+
+databases:
+  - name: interview-db
+    plan: free
+    databaseName: interview
+    user: app
+
+services:
+  # --- Backend API ---
+  - type: web
+    name: interview-api
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: interview-db
+          property: connectionString
+      - key: DATABASE_SSL
+        value: "false" # internal Render DB connection does not use SSL
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true # Render generates a strong random value
+      - key: JWT_EXPIRES_IN
+        value: "12h"
+      - key: ADMIN_EMAIL
+        value: admin@example.com
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DEFAULT_RECRUITER_PASSWORD
+        sync: false
+      - key: FRONTEND_URL
+        sync: false # set to your static site URL after first deploy
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: GOOGLE_SHEETS_ID
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_KEY
+        sync: false
+      - key: GOOGLE_SHEETS_RANGE
+        sync: false
+
+  # --- Frontend (static) ---
+  - type: web
+    name: interview-web
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    routes:
+      # Proxy API calls to the backend (same-origin, so no CORS needed).
+      # Replace the host below if your API's real URL differs from this name.
+      - type: rewrite
+        source: /api/*
+        destination: https://interview-api.onrender.com/api/*
+      # SPA fallback
+      - type: rewrite
+        source: /*
+        destination: /index.html
