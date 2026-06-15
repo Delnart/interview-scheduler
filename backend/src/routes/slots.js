@@ -30,7 +30,7 @@ const SELECT_SLOTS = `
 `;
 
 // List matched slots (admin only) - optionally filter by op / status
-router.get('/', requireAuth, requireAdmin, (req, res) => {
+router.get('/', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
   const clauses = [];
   const params = [];
   if (req.query.op) {
@@ -42,9 +42,9 @@ router.get('/', requireAuth, requireAdmin, (req, res) => {
     params.push(req.query.status);
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  const rows = db.prepare(`${SELECT_SLOTS} ${where} ORDER BY matched_slots.start_time`).all(...params);
+  const rows = await db.prepare(`${SELECT_SLOTS} ${where} ORDER BY matched_slots.start_time`).all(...params);
   res.json({ slots: rows.map(slotRow) });
-});
+}));
 
 // Manually trigger regeneration of matched slots (admin only)
 const regenSchema = z.object({ op: z.string().optional() });
@@ -52,7 +52,7 @@ router.post('/regenerate', requireAuth, requireAdmin, asyncHandler(async (req, r
   const parsed = regenSchema.safeParse(req.body || {});
   const op = parsed.success ? parsed.data.op : undefined;
   if (op) {
-    const exists = db.prepare('SELECT code FROM op_codes WHERE code = ?').get(op);
+    const exists = await db.prepare('SELECT code FROM op_codes WHERE code = ?').get(op);
     if (!exists) return res.status(404).json({ error: 'ОП не знайдено' });
     await slotMatcher.generateMatchedSlotsForOp(op);
   } else {

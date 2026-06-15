@@ -37,10 +37,10 @@ async function exchangeCodeForTokens(code) {
   return tokens;
 }
 
-function saveTokens(recruiterId, tokens) {
+async function saveTokens(recruiterId, tokens) {
   // Merge with any existing tokens so refresh_token is preserved
   // (Google only returns refresh_token on the first consent).
-  const row = db.prepare('SELECT google_tokens FROM recruiters WHERE id = ?').get(recruiterId);
+  const row = await db.prepare('SELECT google_tokens FROM recruiters WHERE id = ?').get(recruiterId);
   let existing = {};
   if (row && row.google_tokens) {
     try {
@@ -51,16 +51,16 @@ function saveTokens(recruiterId, tokens) {
   }
   const merged = { ...existing, ...tokens };
   if (!merged.refresh_token && existing.refresh_token) merged.refresh_token = existing.refresh_token;
-  db.prepare('UPDATE recruiters SET google_tokens = ? WHERE id = ?').run(JSON.stringify(merged), recruiterId);
+  await db.prepare('UPDATE recruiters SET google_tokens = ? WHERE id = ?').run(JSON.stringify(merged), recruiterId);
   return merged;
 }
 
-function clearTokens(recruiterId) {
-  db.prepare('UPDATE recruiters SET google_tokens = NULL WHERE id = ?').run(recruiterId);
+async function clearTokens(recruiterId) {
+  await db.prepare('UPDATE recruiters SET google_tokens = NULL WHERE id = ?').run(recruiterId);
 }
 
-function getRecruiterClient(recruiterId) {
-  const row = db.prepare('SELECT google_tokens FROM recruiters WHERE id = ?').get(recruiterId);
+async function getRecruiterClient(recruiterId) {
+  const row = await db.prepare('SELECT google_tokens FROM recruiters WHERE id = ?').get(recruiterId);
   if (!row || !row.google_tokens) return null;
   const client = getOAuthClient();
   if (!client) return null;
@@ -73,20 +73,20 @@ function getRecruiterClient(recruiterId) {
   if (!tokens || !tokens.access_token) return null;
   client.setCredentials(tokens);
   client.on('tokens', (newTokens) => {
-    saveTokens(recruiterId, newTokens);
+    saveTokens(recruiterId, newTokens).catch((err) => console.error('saveTokens failed:', err.message));
   });
   return client;
 }
 
-function isConnected(recruiterId) {
-  const row = db.prepare('SELECT google_tokens FROM recruiters WHERE id = ?').get(recruiterId);
+async function isConnected(recruiterId) {
+  const row = await db.prepare('SELECT google_tokens FROM recruiters WHERE id = ?').get(recruiterId);
   return Boolean(row && row.google_tokens);
 }
 
 // Returns busy intervals [{start: Date, end: Date}] from the recruiter's primary
 // Google calendar between timeMin and timeMax. Returns [] if not connected or on error.
 async function getBusyIntervals(recruiterId, timeMin, timeMax) {
-  const client = getRecruiterClient(recruiterId);
+  const client = await getRecruiterClient(recruiterId);
   if (!client) return [];
   try {
     const calendar = google.calendar({ version: 'v3', auth: client });
@@ -107,7 +107,7 @@ async function getBusyIntervals(recruiterId, timeMin, timeMax) {
 
 // Creates a calendar event on the recruiter's primary calendar. Returns the event id, or null.
 async function createEvent(recruiterId, { summary, description, start, end, attendees = [] }) {
-  const client = getRecruiterClient(recruiterId);
+  const client = await getRecruiterClient(recruiterId);
   if (!client) return null;
   try {
     const calendar = google.calendar({ version: 'v3', auth: client });
@@ -130,7 +130,7 @@ async function createEvent(recruiterId, { summary, description, start, end, atte
 
 async function deleteEvent(recruiterId, eventId) {
   if (!eventId) return;
-  const client = getRecruiterClient(recruiterId);
+  const client = await getRecruiterClient(recruiterId);
   if (!client) return;
   try {
     const calendar = google.calendar({ version: 'v3', auth: client });

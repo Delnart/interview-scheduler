@@ -5,12 +5,12 @@
   "main": "src/index.js",
   "type": "commonjs",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=20"
   },
   "scripts": {
-    "start": "node --experimental-sqlite src/index.js",
-    "dev": "node --experimental-sqlite --watch src/index.js",
-    "seed": "node --experimental-sqlite src/db/seed.js"
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "seed": "node src/db/seed.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -21,6 +21,7 @@
     "googleapis": "^144.0.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
+    "pg": "^8.21.0",
     "uuid": "^9.0.1",
     "zod": "^3.23.8"
   }

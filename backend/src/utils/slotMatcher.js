@@ -5,14 +5,14 @@ const googleCalendar = require('./googleCalendar');
 
 const DEFAULT_WINDOW_DAYS = 60;
 
-function getSlotDurationMinutes() {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('slot_duration_minutes');
+async function getSlotDurationMinutes() {
+  const row = await db.prepare('SELECT value FROM settings WHERE key = ?').get('slot_duration_minutes');
   return row ? parseInt(row.value, 10) : 45;
 }
 
 // Raw availability intervals declared by the recruiter, within [timeMin, timeMax].
-function getRawAvailability(recruiterId, timeMin, timeMax) {
-  const rows = db
+async function getRawAvailability(recruiterId, timeMin, timeMax) {
+  const rows = await db
     .prepare('SELECT start_time, end_time FROM availability WHERE recruiter_id = ?')
     .all(recruiterId);
   return rows
@@ -22,8 +22,8 @@ function getRawAvailability(recruiterId, timeMin, timeMax) {
 }
 
 // Time ranges already committed via a booked matched slot (this recruiter as either main or secondary).
-function getBookedIntervals(recruiterId, timeMin, timeMax) {
-  const rows = db
+async function getBookedIntervals(recruiterId, timeMin, timeMax) {
+  const rows = await db
     .prepare(
       `SELECT start_time, end_time FROM matched_slots
        WHERE status = 'booked' AND (main_recruiter_id = ? OR secondary_recruiter_id = ?)`
@@ -37,15 +37,15 @@ function getBookedIntervals(recruiterId, timeMin, timeMax) {
 
 // Free time = declared availability minus already-booked interviews minus Google Calendar busy time.
 async function getRecruiterFreeIntervals(recruiterId, timeMin, timeMax) {
-  const available = getRawAvailability(recruiterId, timeMin, timeMax);
+  const available = await getRawAvailability(recruiterId, timeMin, timeMax);
   if (available.length === 0) return [];
-  const booked = getBookedIntervals(recruiterId, timeMin, timeMax);
+  const booked = await getBookedIntervals(recruiterId, timeMin, timeMax);
   const googleBusy = await googleCalendar.getBusyIntervals(recruiterId, timeMin, timeMax);
   return subtractIntervals(available, [...booked, ...googleBusy]);
 }
 
-function getTeamAssignments(opCode) {
-  const rows = db
+async function getTeamAssignments(opCode) {
+  const rows = await db
     .prepare(
       `SELECT op_recruiters.recruiter_id as recruiter_id, op_recruiters.role as role
        FROM op_recruiters
@@ -61,8 +61,8 @@ function getTeamAssignments(opCode) {
 
 // Global pool of potential partners: every active recruiter who belongs to ANY OP's
 // team. A "main" recruiter for an OP can be paired with anyone from this pool.
-function getGlobalTeamMembers() {
-  const rows = db
+async function getGlobalTeamMembers() {
+  const rows = await db
     .prepare(
       `SELECT DISTINCT op_recruiters.recruiter_id as recruiter_id
        FROM op_recruiters
@@ -77,7 +77,7 @@ function getGlobalTeamMembers() {
 // free time with every partner's, splitting overlaps into fixed-size slots. Booked
 // slots are never touched.
 async function generateMatchedSlotsForOp(opCode, windowDays = DEFAULT_WINDOW_DAYS, options = {}) {
-  const duration = options.duration ?? getSlotDurationMinutes();
+  const duration = options.duration ?? (await getSlotDurationMinutes());
   const timeMin = options.timeMin ?? new Date();
   const timeMax = options.timeMax ?? new Date(timeMin.getTime() + windowDays * 24 * 60 * 60 * 1000);
 
@@ -91,8 +91,8 @@ async function generateMatchedSlotsForOp(opCode, windowDays = DEFAULT_WINDOW_DAY
     return freeCache.get(recruiterId);
   };
 
-  const { main } = getTeamAssignments(opCode);
-  const partners = getGlobalTeamMembers();
+  const { main } = await getTeamAssignments(opCode);
+  const partners = await getGlobalTeamMembers();
   const validKeys = new Set();
 
   const insertStmt = db.prepare(
@@ -114,29 +114,29 @@ async function generateMatchedSlotsForOp(opCode, windowDays = DEFAULT_WINDOW_DAY
         const startIso = slot.start.toISOString();
         const endIso = slot.end.toISOString();
         validKeys.add(`${mainId}|${secId}|${startIso}`);
-        insertStmt.run(uuid(), opCode, mainId, secId, startIso, endIso);
+        await insertStmt.run(uuid(), opCode, mainId, secId, startIso, endIso);
       }
     }
   }
 
   // Remove stale 'open' slots (no longer supported by current availability/config)
-  const openSlots = db
+  const openSlots = await db
     .prepare(`SELECT id, main_recruiter_id, secondary_recruiter_id, start_time FROM matched_slots WHERE op_code = ? AND status = 'open'`)
     .all(opCode);
   const deleteStmt = db.prepare('DELETE FROM matched_slots WHERE id = ?');
   for (const row of openSlots) {
     const key = `${row.main_recruiter_id}|${row.secondary_recruiter_id}|${row.start_time}`;
-    if (!validKeys.has(key)) deleteStmt.run(row.id);
+    if (!validKeys.has(key)) await deleteStmt.run(row.id);
   }
 }
 
 async function regenerateAll(windowDays = DEFAULT_WINDOW_DAYS) {
-  const ops = db.prepare('SELECT code FROM op_codes').all();
+  const ops = await db.prepare('SELECT code FROM op_codes').all();
   // One shared cache + time window across all OPs, so each recruiter's freebusy is
   // fetched at most once per pass.
   const timeMin = new Date();
   const timeMax = new Date(timeMin.getTime() + windowDays * 24 * 60 * 60 * 1000);
-  const duration = getSlotDurationMinutes();
+  const duration = await getSlotDurationMinutes();
   const freeCache = new Map();
   for (const op of ops) {
     await generateMatchedSlotsForOp(op.code, windowDays, { timeMin, timeMax, duration, freeCache });

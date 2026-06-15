@@ -11,10 +11,10 @@
 
 ## Технології
 
-- Backend: Node.js (Express) + SQLite (вбудований `node:sqlite`, без нативної компіляції)
+- Backend: Node.js (Express) + PostgreSQL (через `pg`)
 - Frontend: React (Vite) + react-big-calendar
 - Авторизація: JWT + bcrypt
-- Google Calendar API (опціонально)
+- Google Calendar API та Google Sheets API (опціонально)
 
 ## Структура проєкту
 
@@ -28,7 +28,8 @@ interview-scheduler/
 
 ### Вимоги
 
-- Node.js **>= 22.5.0** (потрібен для вбудованого `node:sqlite`)
+- Node.js **>= 20**
+- PostgreSQL (локально найпростіше підняти через Docker — див. розділ «Запуск через Docker»)
 
 ### 1. Backend
 
@@ -39,6 +40,10 @@ cp .env.example .env
 
 Відкрийте `.env` і заповніть значення:
 
+- `DATABASE_URL` — **обов'язково** рядок підключення до PostgreSQL (напр.
+  `postgres://app:app@localhost:5432/interview`). Для керованої БД (Neon/Supabase/Render) додатково
+  поставте `DATABASE_SSL=true`. Сервер не запуститься без `DATABASE_URL`. Схема й seed створюються
+  автоматично при першому запуску.
 - `JWT_SECRET` — **обов'язково** довгий випадковий рядок (наприклад, `openssl rand -hex 32`). Сервер не
   запуститься, якщо ця змінна не змінена зі значення-заглушки.
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD` — облікові дані адміністратора, які будуть створені при першому запуску.
@@ -56,10 +61,9 @@ npm install
 npm run dev
 ```
 
-При першому запуску база даних `data.sqlite` створюється автоматично, а також виконується seed:
-створюються 7 ОП (ІА, ІМ, ІП, ІС, ІО, ІК, ІІ), акаунт адміністратора та стартовий набір рекрутерів з
-командами, як було вказано у вимогах. Усе це повністю редагується далі через адмін-панель
-(розділи «Рекрутери» та «Команди по ОП»).
+При першому запуску таблиці створюються автоматично, а також виконується seed: 7 ОП
+(ІА, ІМ, ІП, ІС, ІО, ІК, ІІ), акаунт адміністратора та стартовий набір рекрутерів з командами.
+Усе це повністю редагується далі через адмін-панель (розділи «Рекрутери» та «Команди по ОП»).
 
 API запуститься на `http://localhost:4000`.
 
@@ -184,9 +188,8 @@ npm run dev
 - **Перед виходом у продакшн**:
   - змініть усі паролі за замовчуванням (адмін + всі рекрутери);
   - використовуйте HTTPS;
-  - зберігайте `.env` поза репозиторієм (вже додано у `.gitignore`-подібний підхід — не комітьте його);
-  - за потреби перенесіть SQLite на Postgres для production-навантаження (структура запитів у
-    `backend/src/db` ізольована в одному модулі, заміна БД не вимагає змін в інших файлах routes).
+  - зберігайте `.env` (і JSON-ключ сервісного акаунта) поза репозиторієм — вони у `.gitignore`;
+  - вмикайте `DATABASE_SSL=true` для керованої БД і робіть регулярні бекапи PostgreSQL.
 
 ## Налаштування тривалості слотів
 
@@ -197,54 +200,40 @@ npm run dev
 
 ## Запуск через Docker (найпростіше)
 
-У корені проєкту є `docker-compose.yml`: nginx роздає зібраний фронтенд і проксує `/api` на backend,
-SQLite зберігається у Docker-волюмі (`db-data`), тож переживає перезапуски.
+У корені проєкту є `docker-compose.yml`: піднімає **PostgreSQL** (дані у волюмі `pg-data`, переживають
+перезапуски), Node API та nginx, що роздає фронтенд і проксує `/api` на backend.
 
 ```bash
-cp .env.example .env        # заповніть JWT_SECRET та паролі
+cp .env.example .env        # заповніть POSTGRES_PASSWORD, JWT_SECRET, паролі
 docker compose up -d --build
 # відкрийте http://localhost:8080
 ```
 
-Backend назовні не публікується — він доступний лише через проксі фронтенду, тож весь застосунок працює
-за одним портом (`HTTP_PORT`, за замовчуванням 8080).
+Backend і БД назовні не публікуються — застосунок доступний лише через фронтенд за одним портом
+(`HTTP_PORT`, за замовчуванням 8080).
 
 ## Деплой — стабільно і безкоштовно
 
-SQLite — це файл, тому хостинг має давати **постійний диск** і **не присипляти** процес. Нижче дві робочі
-безкоштовні схеми.
+Дані тепер у PostgreSQL, тож БД можна винести в керований безкоштовний сервіс, а застосунок —
+перезапускати/передеплоювати скільки завгодно без втрати даних. Найпростіший повністю безкоштовний
+стек із безкоштовними доменами:
 
-### Варіант A (рекомендовано): безкоштовна VM + Docker + Cloudflare Tunnel
+1. **База — Neon** (neon.tech, free): створіть проєкт → скопіюйте connection string у `DATABASE_URL`,
+   поставте `DATABASE_SSL=true`. Дані живуть тут постійно.
+2. **Backend — Fly.io** (не присипляє, безкоштовний обсяг): `fly launch` у теці `backend`,
+   `fly secrets set DATABASE_URL=... DATABASE_SSL=true JWT_SECRET=... ADMIN_PASSWORD=... ...`,
+   `fly deploy`. Отримаєте домен `https://<app>.fly.dev`.
+3. **Frontend — Vercel** (free, не присипляє): імпортуйте репозиторій, root-теку `frontend`. Додайте
+   `frontend/vercel.json`, що проксує `/api` на backend, щоб усе лишалось на одному домені:
+   ```json
+   { "rewrites": [{ "source": "/api/:path*", "destination": "https://<app>.fly.dev/api/:path*" }] }
+   ```
+   Безкоштовний домен — `https://<your>.vercel.app`.
+4. На backend поставте `FRONTEND_URL=https://<your>.vercel.app`, а в Google Cloud додайте
+   `https://<your>.vercel.app/api/calendar/oauth/callback` як redirect URI (= `GOOGLE_REDIRECT_URI`).
 
-Найстабільніше та реально безкоштовне для невеликого проєкту.
-
-1. Візьміть **завжди-безкоштовну VM**: Oracle Cloud *Always Free*, Google Cloud *e2-micro free tier* або
-   будь-який інший «always free» інстанс. Встановіть на ній Docker.
-2. Залийте код (`git clone`), створіть `.env`, запустіть `docker compose up -d --build`.
-3. Для HTTPS і домену без відкривання портів — **Cloudflare Tunnel** (безкоштовний): встановіть `cloudflared`,
-   `cloudflared tunnel ...` і вкажіть тунель на `http://localhost:8080`. Отримаєте `https://ваш-домен` з
-   сертифікатом, а сама VM лишається закритою. (Альтернатива — Caddy на VM для авто-HTTPS.)
-4. У `.env` задайте `FRONTEND_URL=https://ваш-домен`, а в Google Cloud — додайте
-   `https://ваш-домен/api/calendar/oauth/callback` як redirect URI і встановіть це ж значення у
-   `GOOGLE_REDIRECT_URI`.
-
-### Варіант B (найпростіше кероване): Fly.io
-
-Fly запускає Docker-образ і дає **persistent volume** для SQLite, не присипляє додаток і коштує близько нуля
-на малому трафіку.
-
-1. Встановіть `flyctl`, `fly launch` у теці `backend` (візьме `backend/Dockerfile`).
-2. Створіть volume і змонтуйте його на `/data` (там лежить `data.sqlite` — змінна `DB_PATH`).
-3. Задайте секрети: `fly secrets set JWT_SECRET=... ADMIN_PASSWORD=... FRONTEND_URL=...`.
-4. Frontend зберіть окремо (`npm run build`) і роздайте через **Vercel / Netlify / Cloudflare Pages**
-   (безкоштовно), вказавши проксування `/api` на адресу backend на Fly.
-
-### Найпростіший «split» (з застереженням)
-
-Frontend — на **Vercel/Netlify** (безкоштовно, стабільно). Backend — будь-де, але пам'ятайте:
-на безкоштовних тарифах **Render/Railway** контейнер присипляється і **диск ефемерний** — SQLite буде
-скидатись при перезапусках. Для такого шляху або під'єднайте постійний диск, або перенесіть БД на Postgres
-(запити ізольовані в `backend/src/db`, заміна не потребує змін у роутах).
+Альтернатива «все в одному»: безкоштовна VM (Oracle Cloud *Always Free*) + `docker compose up -d` +
+**Cloudflare Tunnel** для безкоштовного HTTPS-домену — увесь стек (з PostgreSQL) на одній машині.
 
 ### Спільне для будь-якого хостингу
 - `NODE_ENV=production`, унікальний `JWT_SECRET`, `FRONTEND_URL` = реальний домен фронтенду.

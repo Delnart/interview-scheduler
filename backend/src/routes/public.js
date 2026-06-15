@@ -18,30 +18,30 @@ const bookingLimiter = rateLimit({
 });
 
 // List of OPs candidates can choose from
-router.get('/ops', (req, res) => {
-  const rows = db.prepare('SELECT code, name FROM op_codes ORDER BY name').all();
+router.get('/ops', asyncHandler(async (req, res) => {
+  const rows = await db.prepare('SELECT code, name FROM op_codes ORDER BY name').all();
   res.json({ ops: rows });
-});
+}));
 
 // Available (open) interview slots for an OP, sorted chronologically.
-router.get('/slots', (req, res) => {
+router.get('/slots', asyncHandler(async (req, res) => {
   const opCode = req.query.op;
   if (!opCode) return res.status(400).json({ error: 'Параметр op є обовʼязковим' });
 
-  const op = db.prepare('SELECT code FROM op_codes WHERE code = ?').get(opCode);
+  const op = await db.prepare('SELECT code FROM op_codes WHERE code = ?').get(opCode);
   if (!op) return res.status(404).json({ error: 'ОП не знайдено' });
 
   const now = new Date().toISOString();
-  const rows = db
+  const rows = await db
     .prepare(
-      `SELECT id, start_time as startTime, end_time as endTime
+      `SELECT id, start_time as "startTime", end_time as "endTime"
        FROM matched_slots
        WHERE op_code = ? AND status = 'open' AND start_time > ?
        ORDER BY start_time`
     )
     .all(opCode, now);
   res.json({ slots: rows });
-});
+}));
 
 // Only email + Telegram are collected; ПІБ, group and answers are matched from the
 // Google Sheet. fullName/groupName stay optional for backwards compatibility.
@@ -64,7 +64,7 @@ router.post('/bookings', bookingLimiter, asyncHandler(async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Невірні дані' });
   const { matchedSlotId, fullName, email, telegramTag, groupName } = parsed.data;
 
-  const slot = db.prepare('SELECT * FROM matched_slots WHERE id = ?').get(matchedSlotId);
+  const slot = await db.prepare('SELECT * FROM matched_slots WHERE id = ?').get(matchedSlotId);
   if (!slot) return res.status(404).json({ error: 'Слот не знайдено' });
   if (slot.status !== 'open') return res.status(409).json({ error: 'Цей слот вже зайнятий. Оберіть інший час.' });
   if (new Date(slot.start_time) < new Date()) return res.status(409).json({ error: 'Цей слот вже минув. Оберіть інший час.' });
@@ -74,7 +74,7 @@ router.post('/bookings', bookingLimiter, asyncHandler(async (req, res) => {
   // Guard against double-booking a recruiter: two open slots for the same recruiter
   // at overlapping times can coexist across OPs until regeneration. Reject if either
   // recruiter already has a *booked* slot overlapping this time range, in any OP.
-  const overlap = db
+  const overlap = await db
     .prepare(
       `SELECT id FROM matched_slots
        WHERE status = 'booked'
@@ -94,31 +94,28 @@ router.post('/bookings', bookingLimiter, asyncHandler(async (req, res) => {
   if (overlap) {
     // This slot is stale (one of its recruiters is already booked elsewhere at this
     // time) — remove it so it stops being offered, and report it as unavailable.
-    db.prepare(`UPDATE matched_slots SET status = 'cancelled' WHERE id = ? AND status = 'open'`).run(matchedSlotId);
+    await db.prepare(`UPDATE matched_slots SET status = 'cancelled' WHERE id = ? AND status = 'open'`).run(matchedSlotId);
     return res.status(409).json({ error: 'Цей слот вже зайнятий. Оберіть інший час.' });
   }
 
-  db.exec('BEGIN');
-  try {
-    const update = db
+  // Atomically claim the slot (conditional UPDATE) and record the booking.
+  const booked = await db.transaction(async (tx) => {
+    const update = await tx
       .prepare(`UPDATE matched_slots SET status = 'booked' WHERE id = ? AND status = 'open'`)
       .run(matchedSlotId);
-    if (update.changes === 0) {
-      db.exec('ROLLBACK');
-      return res.status(409).json({ error: 'Цей слот вже зайнятий. Оберіть інший час.' });
-    }
-    db.prepare(
-      `INSERT INTO bookings (id, matched_slot_id, full_name, email, telegram_tag, group_name, op_code)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(bookingId, matchedSlotId, fullName, email, telegramTag, groupName, slot.op_code);
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+    if (update.changes === 0) return false;
+    await tx
+      .prepare(
+        `INSERT INTO bookings (id, matched_slot_id, full_name, email, telegram_tag, group_name, op_code)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(bookingId, matchedSlotId, fullName, email, telegramTag, groupName, slot.op_code);
+    return true;
+  });
+  if (!booked) return res.status(409).json({ error: 'Цей слот вже зайнятий. Оберіть інший час.' });
 
   // Best-effort Google Calendar event creation for both recruiters
-  const op = db.prepare('SELECT name FROM op_codes WHERE code = ?').get(slot.op_code);
+  const op = await db.prepare('SELECT name FROM op_codes WHERE code = ?').get(slot.op_code);
   const groupLabel = op ? op.name : slot.op_code;
   const start = new Date(slot.start_time);
   const end = new Date(slot.end_time);
@@ -139,7 +136,7 @@ router.post('/bookings', bookingLimiter, asyncHandler(async (req, res) => {
       googleCalendar.createEvent(slot.secondary_recruiter_id, { summary, description, start, end }),
     ]);
     if (mainEventId || secEventId) {
-      db.prepare('UPDATE matched_slots SET google_event_id_main = ?, google_event_id_secondary = ? WHERE id = ?').run(
+      await db.prepare('UPDATE matched_slots SET google_event_id_main = ?, google_event_id_secondary = ? WHERE id = ?').run(
         mainEventId,
         secEventId,
         matchedSlotId
@@ -164,7 +161,7 @@ router.post('/bookings', bookingLimiter, asyncHandler(async (req, res) => {
   (async () => {
     // "Change time": rebooking with the same Telegram cancels the candidate's previous
     // future interview(s), frees that time and removes the stale Google Calendar events.
-    const prior = db
+    const prior = await db
       .prepare(
         `SELECT ms.id, ms.main_recruiter_id, ms.secondary_recruiter_id,
                 ms.google_event_id_main, ms.google_event_id_secondary
@@ -180,8 +177,8 @@ router.post('/bookings', bookingLimiter, asyncHandler(async (req, res) => {
     for (const p of prior) {
       await googleCalendar.deleteEvent(p.main_recruiter_id, p.google_event_id_main);
       await googleCalendar.deleteEvent(p.secondary_recruiter_id, p.google_event_id_secondary);
-      db.prepare(`UPDATE matched_slots SET status = 'cancelled' WHERE id = ?`).run(p.id);
-      db.prepare('DELETE FROM bookings WHERE matched_slot_id = ?').run(p.id);
+      await db.prepare(`UPDATE matched_slots SET status = 'cancelled' WHERE id = ?`).run(p.id);
+      await db.prepare('DELETE FROM bookings WHERE matched_slot_id = ?').run(p.id);
     }
 
     // Regenerate everywhere: the global partner pool means this change can affect any

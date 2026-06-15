@@ -11,7 +11,7 @@ const router = express.Router();
 // A change to one recruiter's free time can affect every OP's slots (global partner
 // pool), so regenerate everything — but only if they belong to the pool at all.
 async function regenerateOpsForRecruiter(recruiterId) {
-  const inPool = db.prepare('SELECT 1 FROM op_recruiters WHERE recruiter_id = ?').get(recruiterId);
+  const inPool = await db.prepare('SELECT 1 FROM op_recruiters WHERE recruiter_id = ?').get(recruiterId);
   if (!inPool) return;
   await slotMatcher.regenerateAll();
 }
@@ -22,15 +22,15 @@ function resolveRecruiterId(req, requestedId) {
 }
 
 // List availability for a recruiter (self, or any recruiter if admin)
-router.get('/', requireAuth, (req, res) => {
+router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const recruiterId = resolveRecruiterId(req, req.query.recruiterId);
   if (recruiterId !== req.user.id && !req.user.isAdmin) return res.status(403).json({ error: 'Немає доступу' });
 
-  const rows = db
-    .prepare('SELECT id, recruiter_id as recruiterId, start_time as startTime, end_time as endTime FROM availability WHERE recruiter_id = ? ORDER BY start_time')
+  const rows = await db
+    .prepare('SELECT id, recruiter_id as "recruiterId", start_time as "startTime", end_time as "endTime" FROM availability WHERE recruiter_id = ? ORDER BY start_time')
     .all(recruiterId);
   res.json({ availability: rows });
-});
+}));
 
 const createSchema = z.object({
   recruiterId: z.string().optional(),
@@ -52,11 +52,11 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
   if (!(start < end)) return res.status(400).json({ error: 'Час початку має бути раніше часу завершення' });
   if (end < new Date()) return res.status(400).json({ error: 'Не можна додавати час у минулому' });
 
-  const recruiter = db.prepare('SELECT id FROM recruiters WHERE id = ? AND active = 1').get(recruiterId);
+  const recruiter = await db.prepare('SELECT id FROM recruiters WHERE id = ? AND active = 1').get(recruiterId);
   if (!recruiter) return res.status(404).json({ error: 'Рекрутера не знайдено' });
 
   const id = uuid();
-  db.prepare('INSERT INTO availability (id, recruiter_id, start_time, end_time) VALUES (?, ?, ?, ?)').run(
+  await db.prepare('INSERT INTO availability (id, recruiter_id, start_time, end_time) VALUES (?, ?, ?, ?)').run(
     id,
     recruiterId,
     start.toISOString(),
@@ -93,7 +93,7 @@ router.put('/day', requireAuth, asyncHandler(async (req, res) => {
   const recruiterId = resolveRecruiterId(req, parsed.data.recruiterId);
   if (recruiterId !== req.user.id && !req.user.isAdmin) return res.status(403).json({ error: 'Немає доступу' });
 
-  const recruiter = db.prepare('SELECT id FROM recruiters WHERE id = ? AND active = 1').get(recruiterId);
+  const recruiter = await db.prepare('SELECT id FROM recruiters WHERE id = ? AND active = 1').get(recruiterId);
   if (!recruiter) return res.status(404).json({ error: 'Рекрутера не знайдено' });
 
   const start = new Date(dayStart);
@@ -111,22 +111,17 @@ router.put('/day', requireAuth, asyncHandler(async (req, res) => {
     normalized.push({ start: slotStart.toISOString(), end: slotEnd.toISOString() });
   }
 
-  db.exec('BEGIN');
-  try {
-    db.prepare('DELETE FROM availability WHERE recruiter_id = ? AND start_time >= ? AND start_time < ?').run(
+  await db.transaction(async (tx) => {
+    await tx.prepare('DELETE FROM availability WHERE recruiter_id = ? AND start_time >= ? AND start_time < ?').run(
       recruiterId,
       start.toISOString(),
       end.toISOString()
     );
-    const insertStmt = db.prepare('INSERT INTO availability (id, recruiter_id, start_time, end_time) VALUES (?, ?, ?, ?)');
+    const insertStmt = tx.prepare('INSERT INTO availability (id, recruiter_id, start_time, end_time) VALUES (?, ?, ?, ?)');
     for (const slot of normalized) {
-      insertStmt.run(uuid(), recruiterId, slot.start, slot.end);
+      await insertStmt.run(uuid(), recruiterId, slot.start, slot.end);
     }
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+  });
 
   await regenerateOpsForRecruiter(recruiterId);
 
@@ -135,11 +130,11 @@ router.put('/day', requireAuth, asyncHandler(async (req, res) => {
 
 // Remove a free-time slot
 router.delete('/:id', requireAuth, asyncHandler(async (req, res) => {
-  const row = db.prepare('SELECT * FROM availability WHERE id = ?').get(req.params.id);
+  const row = await db.prepare('SELECT * FROM availability WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Не знайдено' });
   if (row.recruiter_id !== req.user.id && !req.user.isAdmin) return res.status(403).json({ error: 'Немає доступу' });
 
-  db.prepare('DELETE FROM availability WHERE id = ?').run(req.params.id);
+  await db.prepare('DELETE FROM availability WHERE id = ?').run(req.params.id);
   await regenerateOpsForRecruiter(row.recruiter_id);
   res.json({ ok: true });
 }));

@@ -72,16 +72,17 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 4000;
 
-function bootstrapIfEmpty() {
-  const count = db.prepare('SELECT COUNT(*) as c FROM recruiters').get().c;
-  if (count === 0) {
+async function bootstrapIfEmpty() {
+  const row = await db.prepare('SELECT COUNT(*) as c FROM recruiters').get();
+  if (Number(row.c) === 0) {
     console.log('База даних порожня — запускаю seed...');
-    require('./db/seed');
+    await require('./db/seed')();
   }
 }
 
 async function start() {
-  bootstrapIfEmpty();
+  await db.init();
+  await bootstrapIfEmpty();
   // Build the initial set of matched slots on boot.
   try {
     await slotMatcher.regenerateAll();

@@ -1,4 +1,4 @@
-# Interview scheduler — full stack (nginx-served frontend + Node API + SQLite volume).
+# Interview scheduler — full stack (nginx-served frontend + Node API + PostgreSQL).
 #
 # Quick start:
 #   cp .env.example .env      # then fill in JWT_SECRET / passwords
@@ -9,14 +9,33 @@
 # frontend's /api proxy, so the whole app sits behind a single port.
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: interview
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U app -d interview']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   backend:
     build: ./backend
     restart: unless-stopped
     init: true # forward signals / reap zombies (PID 1)
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       PORT: "4000"
-      DB_PATH: /data/data.sqlite
+      DATABASE_URL: postgres://app:${POSTGRES_PASSWORD}@postgres:5432/interview
+      DATABASE_SSL: "false"
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (e.g. openssl rand -hex 32)}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-12h}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
@@ -31,8 +50,6 @@ services:
       GOOGLE_SHEETS_ID: ${GOOGLE_SHEETS_ID:-}
       GOOGLE_SERVICE_ACCOUNT_KEY: ${GOOGLE_SERVICE_ACCOUNT_KEY:-}
       GOOGLE_SHEETS_RANGE: ${GOOGLE_SHEETS_RANGE:-}
-    volumes:
-      - db-data:/data
     expose:
       - "4000"
 
@@ -46,4 +63,4 @@ services:
       - "${HTTP_PORT:-8080}:80"
 
 volumes:
-  db-data:
+  pg-data:

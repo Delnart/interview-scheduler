@@ -1,13 +1,71 @@
-const path = require('path');
-const { DatabaseSync } = require('node:sqlite');
+const { Pool } = require('pg');
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', '..', 'data.sqlite');
+if (!process.env.DATABASE_URL) {
+  console.error('Помилка: змінна середовища DATABASE_URL не задана (рядок підключення до PostgreSQL).');
+  process.exit(1);
+}
 
-const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL');
-db.exec('PRAGMA foreign_keys = ON');
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  // Managed Postgres (Neon / Supabase / Render) requires SSL — set DATABASE_SSL=true.
+  ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
+  max: 10,
+});
 
-db.exec(`
+// The app was written against node:sqlite's synchronous prepare().get/all/run API.
+// This wrapper keeps the same shape but async, and rewrites `?` placeholders to
+// Postgres `$1, $2, ...`.
+function toPg(sql) {
+  let n = 0;
+  return sql.replace(/\?/g, () => `$${++n}`);
+}
+
+function statement(runner, sql) {
+  const text = toPg(sql);
+  return {
+    async get(...params) {
+      const r = await runner(text, params);
+      return r.rows[0];
+    },
+    async all(...params) {
+      const r = await runner(text, params);
+      return r.rows;
+    },
+    async run(...params) {
+      const r = await runner(text, params);
+      return { changes: r.rowCount };
+    },
+  };
+}
+
+const db = {
+  prepare: (sql) => statement((text, params) => pool.query(text, params), sql),
+  exec: (sql) => pool.query(sql),
+  // Runs fn inside a single transaction on one pooled client. fn receives a db-like
+  // object whose prepare()/exec() are bound to that client.
+  async transaction(fn) {
+    const client = await pool.connect();
+    const txDb = {
+      prepare: (sql) => statement((text, params) => client.query(text, params), sql),
+      exec: (sql) => client.query(sql),
+    };
+    try {
+      await client.query('BEGIN');
+      const result = await fn(txDb);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  },
+};
+
+// Creates the schema (idempotent) and runs lightweight migrations. Call once on boot.
+async function init() {
+  await pool.query(`
 CREATE TABLE IF NOT EXISTS recruiters (
   id TEXT PRIMARY KEY,
   full_name TEXT NOT NULL,
@@ -18,7 +76,7 @@ CREATE TABLE IF NOT EXISTS recruiters (
   home_op TEXT,
   active INTEGER NOT NULL DEFAULT 1,
   google_tokens TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS op_codes (
@@ -39,7 +97,7 @@ CREATE TABLE IF NOT EXISTS availability (
   recruiter_id TEXT NOT NULL REFERENCES recruiters(id) ON DELETE CASCADE,
   start_time TEXT NOT NULL,
   end_time TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS matched_slots (
@@ -52,7 +110,7 @@ CREATE TABLE IF NOT EXISTS matched_slots (
   status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','booked','cancelled')),
   google_event_id_main TEXT,
   google_event_id_secondary TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(op_code, main_recruiter_id, secondary_recruiter_id, start_time)
 );
 
@@ -64,7 +122,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   telegram_tag TEXT NOT NULL,
   group_name TEXT NOT NULL,
   op_code TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -78,11 +136,13 @@ CREATE INDEX IF NOT EXISTS idx_matched_slots_main ON matched_slots(main_recruite
 CREATE INDEX IF NOT EXISTS idx_matched_slots_secondary ON matched_slots(secondary_recruiter_id, status);
 `);
 
-// One-time migration: bring old DBs that stored a 60-minute slot duration in line
-// with the current 45-minute grid (otherwise no 45-min overlaps ever match).
-const slotDurationSetting = db.prepare('SELECT value FROM settings WHERE key = ?').get('slot_duration_minutes');
-if (slotDurationSetting && slotDurationSetting.value === '60') {
-  db.prepare('UPDATE settings SET value = ? WHERE key = ?').run('45', 'slot_duration_minutes');
+  // One-time migration: bring old DBs that stored a 60-minute slot duration in line
+  // with the current 45-minute grid (otherwise no 45-min overlaps ever match).
+  await pool.query(
+    `UPDATE settings SET value = '45' WHERE key = 'slot_duration_minutes' AND value = '60'`
+  );
 }
+
+db.init = init;
 
 module.exports = db;

@@ -5,6 +5,7 @@ const { z } = require('zod');
 const rateLimit = require('express-rate-limit');
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
+const asyncHandler = require('../utils/asyncHandler');
 
 const router = express.Router();
 
@@ -34,12 +35,12 @@ function toPublicUser(row) {
   };
 }
 
-router.post('/login', loginLimiter, (req, res) => {
+router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Невірні дані для входу' });
   const { email, password } = parsed.data;
 
-  const row = db.prepare('SELECT * FROM recruiters WHERE email = ?').get(email.toLowerCase().trim());
+  const row = await db.prepare('SELECT * FROM recruiters WHERE email = ?').get(email.toLowerCase().trim());
   if (!row || !row.active) {
     return res.status(401).json({ error: 'Невірний email або пароль' });
   }
@@ -52,32 +53,32 @@ router.post('/login', loginLimiter, (req, res) => {
     { expiresIn: process.env.JWT_EXPIRES_IN || '12h' }
   );
   res.json({ token, user: toPublicUser(row) });
-});
+}));
 
-router.get('/me', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT * FROM recruiters WHERE id = ?').get(req.user.id);
+router.get('/me', requireAuth, asyncHandler(async (req, res) => {
+  const row = await db.prepare('SELECT * FROM recruiters WHERE id = ?').get(req.user.id);
   if (!row) return res.status(404).json({ error: 'Не знайдено' });
   res.json({ user: toPublicUser(row) });
-});
+}));
 
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(1),
   newPassword: z.string().min(8, 'Пароль має містити щонайменше 8 символів'),
 });
 
-router.post('/change-password', requireAuth, (req, res) => {
+router.post('/change-password', requireAuth, asyncHandler(async (req, res) => {
   const parsed = changePasswordSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Невірні дані' });
   }
   const { currentPassword, newPassword } = parsed.data;
-  const row = db.prepare('SELECT * FROM recruiters WHERE id = ?').get(req.user.id);
+  const row = await db.prepare('SELECT * FROM recruiters WHERE id = ?').get(req.user.id);
   if (!row || !bcrypt.compareSync(currentPassword, row.password_hash)) {
     return res.status(401).json({ error: 'Поточний пароль невірний' });
   }
   const newHash = bcrypt.hashSync(newPassword, 10);
-  db.prepare('UPDATE recruiters SET password_hash = ? WHERE id = ?').run(newHash, row.id);
+  await db.prepare('UPDATE recruiters SET password_hash = ? WHERE id = ?').run(newHash, row.id);
   res.json({ ok: true });
-});
+}));
 
 module.exports = router;
