@@ -1,0 +1,20 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Local SQLite database (contains password hashes and candidate PII)
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Dependencies / build output
+node_modules
+dist
+dist-ssr
+
+# OS / editor / FS junk
+.DS_Store
+.fuse_hidden*
+.idea
+*.log

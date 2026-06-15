@@ -1,0 +1,49 @@
+# Interview scheduler — full stack (nginx-served frontend + Node API + SQLite volume).
+#
+# Quick start:
+#   cp .env.example .env      # then fill in JWT_SECRET / passwords
+#   docker compose up -d --build
+#   open http://localhost:8080
+#
+# The backend is NOT published to the host — it is only reachable through the
+# frontend's /api proxy, so the whole app sits behind a single port.
+
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    init: true # forward signals / reap zombies (PID 1)
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      DB_PATH: /data/data.sqlite
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (e.g. openssl rand -hex 32)}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-12h}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      DEFAULT_RECRUITER_PASSWORD: ${DEFAULT_RECRUITER_PASSWORD:?set DEFAULT_RECRUITER_PASSWORD in .env}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      DEFAULT_SLOT_DURATION_MINUTES: ${DEFAULT_SLOT_DURATION_MINUTES:-45}
+      # Google Form responses sheet (optional)
+      GOOGLE_SHEETS_ID: ${GOOGLE_SHEETS_ID:-}
+      GOOGLE_SERVICE_ACCOUNT_KEY: ${GOOGLE_SERVICE_ACCOUNT_KEY:-}
+      GOOGLE_SHEETS_RANGE: ${GOOGLE_SHEETS_RANGE:-}
+    volumes:
+      - db-data:/data
+    expose:
+      - "4000"
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+
+volumes:
+  db-data:
