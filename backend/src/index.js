@@ -94,7 +94,7 @@ async function start() {
   // Periodically refresh matched slots so newly-elapsed time windows roll forward
   // and Google Calendar busy-time changes get picked up.
   setInterval(() => {
-    slotMatcher.regenerateAll().catch((err) => console.error('Помилка регенерації слотів:', err.message));
+    slotMatcher.scheduleRegen();
   }, 15 * 60 * 1000);
 
   // Send Telegram "5 minutes before" reminders. No-op when Telegram isn't configured.

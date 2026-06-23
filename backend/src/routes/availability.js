@@ -10,10 +10,12 @@ const router = express.Router();
 
 // A change to one recruiter's free time can affect every OP's slots (global partner
 // pool), so regenerate everything — but only if they belong to the pool at all.
+// Fire-and-forget: the save response shouldn't wait for the (potentially multi-second)
+// recompute, which runs in the background and coalesces concurrent triggers.
 async function regenerateOpsForRecruiter(recruiterId) {
   const inPool = await db.prepare('SELECT 1 FROM op_recruiters WHERE recruiter_id = ?').get(recruiterId);
   if (!inPool) return;
-  await slotMatcher.regenerateAll();
+  slotMatcher.scheduleRegen();
 }
 
 function resolveRecruiterId(req, requestedId) {

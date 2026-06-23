@@ -143,8 +143,9 @@ router.put('/:code/team', requireAuth, requireAdmin, asyncHandler(async (req, re
 
   // Team membership feeds the global partner pool used by every OP's matching
   // (see slotMatcher.getGlobalTeamMembers), so a change here can affect matched
-  // slots for all OPs, not just this one.
-  await slotMatcher.regenerateAll();
+  // slots for all OPs, not just this one. Recompute in the background so the save
+  // returns immediately instead of waiting for the full pass.
+  slotMatcher.scheduleRegen();
   res.json({ ok: true });
 }));
 

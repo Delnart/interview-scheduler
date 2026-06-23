@@ -189,8 +189,9 @@ router.post('/bookings', bookingLimiter, asyncHandler(async (req, res) => {
     }
 
     // Regenerate everywhere: the global partner pool means this change can affect any
-    // OP's slots (clear now-stale open slots, re-open freed time).
-    await slotMatcher.regenerateAll();
+    // OP's slots (clear now-stale open slots, re-open freed time). Coalesced + in the
+    // background so it never blocks and overlapping triggers collapse into one pass.
+    slotMatcher.scheduleRegen();
   })().catch((err) => console.error('Помилка фонової обробки після бронювання:', err.message));
 }));
 

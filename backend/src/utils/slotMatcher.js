@@ -143,10 +143,38 @@ async function regenerateAll(windowDays = DEFAULT_WINDOW_DAYS) {
   }
 }
 
+// Non-blocking, coalescing trigger for regenerateAll(). Saves (availability, teams,
+// bookings) don't need to wait for slot recomputation — the underlying data is already
+// committed — and on a slow server a full pass can take several seconds. So callers
+// fire this and return immediately. At most one regeneration runs at a time; any
+// triggers that arrive while one is in flight collapse into a single trailing run, so
+// bursts of saves don't pile up redundant passes on the server.
+let regenRunning = false;
+let regenPending = false;
+
+function scheduleRegen(windowDays = DEFAULT_WINDOW_DAYS) {
+  regenPending = true;
+  if (regenRunning) return;
+  regenRunning = true;
+  (async () => {
+    try {
+      while (regenPending) {
+        regenPending = false;
+        await regenerateAll(windowDays);
+      }
+    } catch (err) {
+      console.error('Помилка фонової регенерації слотів:', err.message);
+    } finally {
+      regenRunning = false;
+    }
+  })();
+}
+
 module.exports = {
   getSlotDurationMinutes,
   getRecruiterFreeIntervals,
   getTeamAssignments,
   generateMatchedSlotsForOp,
   regenerateAll,
+  scheduleRegen,
 };
