@@ -6,6 +6,22 @@ const SCOPES = [
   'https://www.googleapis.com/auth/calendar.freebusy',
 ];
 
+// Retries a Google API call a few times with linear backoff. Transient transport
+// failures ("Premature close" / socket resets) to Google's endpoints are common on
+// some hosts, and a quick retry usually succeeds. Throws the last error if all fail.
+async function withRetry(fn, tries = 3) {
+  let lastErr;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < tries) await new Promise((r) => setTimeout(r, 400 * attempt));
+    }
+  }
+  throw lastErr;
+}
+
 function isConfigured() {
   return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REDIRECT_URI);
 }
@@ -33,7 +49,7 @@ function getAuthUrl(state) {
 async function exchangeCodeForTokens(code) {
   const client = getOAuthClient();
   if (!client) throw new Error('Google OAuth не налаштовано');
-  const { tokens } = await client.getToken(code);
+  const { tokens } = await withRetry(() => client.getToken(code));
   return tokens;
 }
 
@@ -90,13 +106,15 @@ async function getBusyIntervals(recruiterId, timeMin, timeMax) {
   if (!client) return [];
   try {
     const calendar = google.calendar({ version: 'v3', auth: client });
-    const resp = await calendar.freebusy.query({
-      requestBody: {
-        timeMin: timeMin.toISOString(),
-        timeMax: timeMax.toISOString(),
-        items: [{ id: 'primary' }],
-      },
-    });
+    const resp = await withRetry(() =>
+      calendar.freebusy.query({
+        requestBody: {
+          timeMin: timeMin.toISOString(),
+          timeMax: timeMax.toISOString(),
+          items: [{ id: 'primary' }],
+        },
+      })
+    );
     const busy = resp.data?.calendars?.primary?.busy || [];
     return busy.map((b) => ({ start: new Date(b.start), end: new Date(b.end) }));
   } catch (err) {
@@ -111,16 +129,18 @@ async function createEvent(recruiterId, { summary, description, start, end, atte
   if (!client) return null;
   try {
     const calendar = google.calendar({ version: 'v3', auth: client });
-    const resp = await calendar.events.insert({
-      calendarId: 'primary',
-      requestBody: {
-        summary,
-        description,
-        start: { dateTime: start.toISOString() },
-        end: { dateTime: end.toISOString() },
-        attendees,
-      },
-    });
+    const resp = await withRetry(() =>
+      calendar.events.insert({
+        calendarId: 'primary',
+        requestBody: {
+          summary,
+          description,
+          start: { dateTime: start.toISOString() },
+          end: { dateTime: end.toISOString() },
+          attendees,
+        },
+      })
+    );
     return resp.data.id;
   } catch (err) {
     console.error(`Google event creation failed for recruiter ${recruiterId}:`, err.message);
@@ -134,7 +154,7 @@ async function deleteEvent(recruiterId, eventId) {
   if (!client) return;
   try {
     const calendar = google.calendar({ version: 'v3', auth: client });
-    await calendar.events.delete({ calendarId: 'primary', eventId });
+    await withRetry(() => calendar.events.delete({ calendarId: 'primary', eventId }));
   } catch (err) {
     console.error(`Google event deletion failed for recruiter ${recruiterId}:`, err.message);
   }

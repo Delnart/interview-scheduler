@@ -1,5 +1,11 @@
 require('dotenv').config();
 
+// Some hosts (notably Render's free tier) have flaky IPv6 egress, which surfaces as
+// "Premature close" when calling Google's OAuth/token endpoints (oauth2.googleapis.com).
+// Prefer IPv4 for all outbound DNS so these HTTPS calls take the working route. Done in
+// code so it doesn't depend on a NODE_OPTIONS env var being set on the host.
+require('dns').setDefaultResultOrder('ipv4first');
+
 const required = ['JWT_SECRET'];
 for (const key of required) {
   if (!process.env[key]) {

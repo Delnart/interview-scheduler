@@ -5,7 +5,24 @@ const { google } = require('googleapis');
 // email/Telegram. Disabled if not configured. Setup: see README and .env.example.
 
 const CACHE_TTL_MS = 60 * 1000;
+// After a failed read, briefly cache the null result too, so a flaky Google connection
+// doesn't get hammered (and the log spammed) on every calendar request.
+const ERROR_TTL_MS = 30 * 1000;
 let cache = { at: 0, lookup: null };
+
+// Retries a transient Google failure ("Premature close" / socket reset) a couple times.
+async function withRetry(fn, tries = 3) {
+  let lastErr;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < tries) await new Promise((r) => setTimeout(r, 400 * attempt));
+    }
+  }
+  throw lastErr;
+}
 
 function isConfigured() {
   return Boolean(
@@ -86,16 +103,21 @@ function parseRows(values) {
 // Returns a lookup { byTelegram: Map, byEmail: Map } (cached), or null if disabled.
 async function getLookup() {
   if (!isConfigured()) return null;
-  if (cache.lookup && Date.now() - cache.at < CACHE_TTL_MS) return cache.lookup;
+  // Serve from cache: a successful lookup for CACHE_TTL_MS, a failed one for the shorter
+  // ERROR_TTL_MS (so it retries soon but doesn't spam Google in between).
+  const ttl = cache.lookup ? CACHE_TTL_MS : ERROR_TTL_MS;
+  if (cache.at && Date.now() - cache.at < ttl) return cache.lookup;
 
   const auth = getAuth();
   if (!auth) return null;
   try {
     const sheets = google.sheets({ version: 'v4', auth });
-    const resp = await sheets.spreadsheets.values.get({
-      spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-      range: process.env.GOOGLE_SHEETS_RANGE || 'A:ZZ',
-    });
+    const resp = await withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId: process.env.GOOGLE_SHEETS_ID,
+        range: process.env.GOOGLE_SHEETS_RANGE || 'A:ZZ',
+      })
+    );
     const rows = parseRows(resp.data.values || []);
     const byTelegram = new Map();
     const byEmail = new Map();
@@ -107,6 +129,7 @@ async function getLookup() {
     return cache.lookup;
   } catch (err) {
     console.error('Google Sheets read failed:', err.message);
+    cache = { at: Date.now(), lookup: null }; // negative-cache the failure for ERROR_TTL_MS
     return null;
   }
 }
