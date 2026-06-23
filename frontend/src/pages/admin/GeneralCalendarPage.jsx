@@ -12,8 +12,9 @@ export default function GeneralCalendarPage() {
 
   useEffect(() => {
     async function load() {
-      const url = user.isAdmin ? '/calendar/general' : '/calendar/mine';
-      const res = await api.get(url);
+      // Everyone sees every booked interview across all OPs, so all recruiters can
+      // see who is interviewing and when — not just their own bookings.
+      const res = await api.get('/calendar/general');
       setEvents(res.data.events);
       if (user.isAdmin) {
         const r = await api.get('/recruiters');
@@ -28,7 +29,7 @@ export default function GeneralCalendarPage() {
 
   return (
     <div>
-      <h1>{user.isAdmin ? 'Загальний календар співбесід' : 'Мій календар співбесід'}</h1>
+      <h1>Загальний календар співбесід</h1>
 
       {user.isAdmin && recruiters.length > 0 && (
         <div className="card" style={{ marginBottom: 16 }}>

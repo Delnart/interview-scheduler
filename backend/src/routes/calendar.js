@@ -66,8 +66,9 @@ async function toEvents(rows) {
   });
 }
 
-// General calendar: every booked interview across all recruiters (admin only)
-router.get('/general', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
+// General calendar: every booked interview across all OPs/recruiters. Visible to any
+// logged-in recruiter so everyone can see who is interviewing and when, regardless of OP.
+router.get('/general', requireAuth, asyncHandler(async (req, res) => {
   const rows = await db.prepare(`${SELECT_BOOKED} ORDER BY matched_slots.start_time`).all();
   res.json({ events: await toEvents(rows) });
 }));

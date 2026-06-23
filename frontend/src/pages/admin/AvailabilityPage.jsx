@@ -4,11 +4,11 @@ import { uk } from 'date-fns/locale';
 import api, { errorMessage } from '../../api.js';
 import { useAuth } from '../../AuthContext.jsx';
 
-// Recruiters pick availability from a fixed daily grid: 08:00–21:00,
+// Recruiters pick availability from a fixed daily grid: 08:00–23:00,
 // each block = 45 min interview + 15 min break, i.e. one slot per hour
 // starting on the hour and lasting 45 minutes (08:00–08:45, 09:00–09:45, ...,
-// 20:00–20:45).
-const SLOT_HOURS = Array.from({ length: 13 }, (_, i) => 8 + i); // 8..20
+// 22:00–22:45).
+const SLOT_HOURS = Array.from({ length: 15 }, (_, i) => 8 + i); // 8..22
 const SLOT_MINUTES = 45;
 
 function pad(n) {
@@ -153,7 +153,7 @@ export default function AvailabilityPage() {
     <div>
       <h1>Мій вільний час</h1>
       <p className="muted" style={{ marginBottom: 16 }}>
-        Оберіть дату та позначте всі проміжки часу, коли ви готові проводити співбесіди (з 08:00 до 21:00).
+        Оберіть дату та позначте всі проміжки часу, коли ви готові проводити співбесіди (з 08:00 до 23:00).
         Кожен слот триває 45 хвилин (співбесіда) + 15 хвилин перерви до наступного. Можна обрати декілька
         слотів одразу — натисніть «Підтвердити вибір», щоб зберегти. Система автоматично знайде спільний
         вільний час з іншим рекрутером і запропонує цей час кандидатам.

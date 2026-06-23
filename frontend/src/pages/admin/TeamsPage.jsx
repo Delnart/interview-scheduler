@@ -6,6 +6,7 @@ export default function TeamsPage() {
   const [recruiters, setRecruiters] = useState([]);
   const [selectedOp, setSelectedOp] = useState(null);
   const [team, setTeam] = useState(null);
+  const [threadId, setThreadId] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [newOpCode, setNewOpCode] = useState('');
@@ -37,6 +38,18 @@ export default function TeamsPage() {
       main: res.data.main.map((r) => r.id),
       secondary: res.data.secondary.map((r) => r.id),
     });
+    setThreadId(res.data.telegramThreadId || '');
+  }
+
+  async function saveThreadId() {
+    setError('');
+    setSuccess('');
+    try {
+      await api.put(`/ops/${selectedOp}`, { telegramThreadId: threadId });
+      setSuccess('Telegram-гілку ОП збережено.');
+    } catch (err) {
+      setError(errorMessage(err, 'Не вдалося зберегти Telegram-гілку'));
+    }
   }
 
   function toggleRole(recruiterId, role) {
@@ -161,6 +174,21 @@ export default function TeamsPage() {
           ) : (
             <>
               <h2>{ops.find((o) => o.code === selectedOp)?.name}</h2>
+
+              <div style={{ marginTop: 12, paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
+                <h3 style={{ marginBottom: 4 }}>Telegram-гілка ОП</h3>
+                <div className="flex" style={{ gap: 8, flexWrap: 'wrap' }}>
+                  <input
+                    style={{ maxWidth: 220 }}
+                    value={threadId}
+                    onChange={(e) => setThreadId(e.target.value)}
+                    placeholder="напр. 12"
+                    inputMode="numeric"
+                  />
+                  <button className="btn btn-sm btn-primary" onClick={saveThreadId}>Зберегти гілку</button>
+                </div>
+              </div>
+
               <div className="admin-two-col" style={{ marginTop: 12 }}>
                 <div>
                   <h3>Основні рекрутери</h3>

@@ -31,17 +31,51 @@ router.post('/', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
   res.status(201).json({ op: { code, name } });
 }));
 
-// Rename an OP (admin only)
+// Update an OP: rename and/or set its Telegram thread id (admin only). Both fields
+// are optional; at least one must be present.
+const updateOpSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    telegramThreadId: z
+      .union([z.string(), z.null()])
+      .optional()
+      .transform((v) => {
+        if (v === undefined) return undefined;
+        const s = (v ?? '').trim();
+        return s === '' ? null : s;
+      })
+      .refine((v) => v === undefined || v === null || /^\d+$/.test(v), {
+        message: 'ID гілки Telegram має бути числом',
+      }),
+  })
+  .refine((d) => d.name !== undefined || d.telegramThreadId !== undefined, {
+    message: 'Немає полів для оновлення',
+  });
+
 router.put('/:code', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
-  const schema = z.object({ name: z.string().min(1) });
-  const parsed = schema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Невірні дані' });
+  const parsed = updateOpSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Невірні дані' });
 
   const existing = await db.prepare('SELECT code FROM op_codes WHERE code = ?').get(req.params.code);
   if (!existing) return res.status(404).json({ error: 'Не знайдено' });
 
-  await db.prepare('UPDATE op_codes SET name = ? WHERE code = ?').run(parsed.data.name, req.params.code);
-  res.json({ op: { code: req.params.code, name: parsed.data.name } });
+  const updates = [];
+  const params = [];
+  if (parsed.data.name !== undefined) {
+    updates.push('name = ?');
+    params.push(parsed.data.name);
+  }
+  if (parsed.data.telegramThreadId !== undefined) {
+    updates.push('telegram_thread_id = ?');
+    params.push(parsed.data.telegramThreadId);
+  }
+  params.push(req.params.code);
+  await db.prepare(`UPDATE op_codes SET ${updates.join(', ')} WHERE code = ?`).run(...params);
+
+  const op = await db
+    .prepare('SELECT code, name, telegram_thread_id AS "telegramThreadId" FROM op_codes WHERE code = ?')
+    .get(req.params.code);
+  res.json({ op });
 }));
 
 // Delete an OP and all its team assignments / matched slots (admin only)
@@ -55,7 +89,9 @@ router.delete('/:code', requireAuth, requireAdmin, asyncHandler(async (req, res)
 // Get the recruiter team configuration for an OP: who can be "main" (recruiter
 // from the candidate's own OP) and who can be "secondary" (from another OP).
 router.get('/:code/team', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
-  const op = await db.prepare('SELECT code FROM op_codes WHERE code = ?').get(req.params.code);
+  const op = await db
+    .prepare('SELECT code, telegram_thread_id AS "telegramThreadId" FROM op_codes WHERE code = ?')
+    .get(req.params.code);
   if (!op) return res.status(404).json({ error: 'Не знайдено' });
 
   const rows = await db
@@ -70,6 +106,7 @@ router.get('/:code/team', requireAuth, requireAdmin, asyncHandler(async (req, re
     .all(req.params.code);
 
   res.json({
+    telegramThreadId: op.telegramThreadId || '',
     main: rows.filter((r) => r.role === 'main').map((r) => ({ id: r.id, fullName: r.fullName, email: r.email, active: Boolean(r.active) })),
     secondary: rows.filter((r) => r.role === 'secondary').map((r) => ({ id: r.id, fullName: r.fullName, email: r.email, active: Boolean(r.active) })),
   });

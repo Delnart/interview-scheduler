@@ -37,10 +37,10 @@ const messages = {
 
 const VIEWS = ['month', 'week', 'day', 'agenda'];
 
-// Interviews only run 08:00–21:00, so clamp the day/week time grid to that range
-// instead of showing an empty 21:00–08:00 stretch. (Date part is ignored by rbc.)
+// Interviews only run 08:00–23:00, so clamp the day/week time grid to that range
+// instead of showing an empty 23:00–08:00 stretch. (Date part is ignored by rbc.)
 const MIN_TIME = new Date(1970, 0, 1, 8, 0, 0);
-const MAX_TIME = new Date(1970, 0, 1, 21, 0, 0);
+const MAX_TIME = new Date(1970, 0, 1, 23, 0, 0);
 
 // "@username" / "username" / "https://t.me/username" -> a t.me URL, or null if unusable.
 function telegramUrl(tag) {

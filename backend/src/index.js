@@ -19,6 +19,7 @@ const rateLimit = require('express-rate-limit');
 
 const db = require('./db');
 const slotMatcher = require('./utils/slotMatcher');
+const telegram = require('./utils/telegram');
 
 const authRoutes = require('./routes/auth');
 const recruiterRoutes = require('./routes/recruiters');
@@ -95,6 +96,13 @@ async function start() {
   setInterval(() => {
     slotMatcher.regenerateAll().catch((err) => console.error('Помилка регенерації слотів:', err.message));
   }, 15 * 60 * 1000);
+
+  // Send Telegram "5 minutes before" reminders. No-op when Telegram isn't configured.
+  if (telegram.isConfigured()) {
+    setInterval(() => {
+      telegram.sendDueReminders().catch((err) => console.error('Помилка нагадувань Telegram:', err.message));
+    }, 60 * 1000);
+  }
 
   app.listen(PORT, () => {
     console.log(`API запущено на порті ${PORT}`);

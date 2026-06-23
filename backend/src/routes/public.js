@@ -5,6 +5,7 @@ const rateLimit = require('express-rate-limit');
 const db = require('../db');
 const slotMatcher = require('../utils/slotMatcher');
 const googleCalendar = require('../utils/googleCalendar');
+const telegram = require('../utils/telegram');
 const asyncHandler = require('../utils/asyncHandler');
 
 const router = express.Router();
@@ -155,6 +156,12 @@ router.post('/bookings', bookingLimiter, asyncHandler(async (req, res) => {
       endTime: slot.end_time,
     },
   });
+
+  // Best-effort: ping the OP's recruiters in their Telegram thread (no-op if Telegram
+  // isn't configured). Fire-and-forget so it never affects the committed booking.
+  telegram
+    .notifyNewBooking(matchedSlotId)
+    .catch((err) => console.error('Не вдалося надіслати сповіщення в Telegram:', err.message));
 
   // Best-effort cleanup, in the background with its own error handling (the booking
   // is already committed, so a failure here must not surface as an error).

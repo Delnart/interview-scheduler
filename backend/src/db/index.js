@@ -134,6 +134,13 @@ CREATE INDEX IF NOT EXISTS idx_availability_recruiter ON availability(recruiter_
 CREATE INDEX IF NOT EXISTS idx_matched_slots_op ON matched_slots(op_code, status);
 CREATE INDEX IF NOT EXISTS idx_matched_slots_main ON matched_slots(main_recruiter_id, status);
 CREATE INDEX IF NOT EXISTS idx_matched_slots_secondary ON matched_slots(secondary_recruiter_id, status);
+
+-- Telegram integration: each OP maps to a forum topic (thread) in the recruiters'
+-- supergroup; recruiters get pinged there on every new booking. Nullable — OPs
+-- without a thread id simply don't get notified.
+ALTER TABLE op_codes ADD COLUMN IF NOT EXISTS telegram_thread_id TEXT;
+-- Guards the "5 minutes before" Telegram reminder so it fires at most once per slot.
+ALTER TABLE matched_slots ADD COLUMN IF NOT EXISTS reminder_sent INTEGER NOT NULL DEFAULT 0;
 `);
 
   // One-time migration: bring old DBs that stored a 60-minute slot duration in line
