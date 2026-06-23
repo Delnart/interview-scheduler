@@ -1,13 +1,3 @@
-# Interview scheduler — full stack (nginx-served frontend + Node API + PostgreSQL).
-#
-# Quick start:
-#   cp .env.example .env      # then fill in JWT_SECRET / passwords
-#   docker compose up -d --build
-#   open http://localhost:8080
-#
-# The backend is NOT published to the host — it is only reachable through the
-# frontend's /api proxy, so the whole app sits behind a single port.
-
 services:
   postgres:
     image: postgres:16-alpine
