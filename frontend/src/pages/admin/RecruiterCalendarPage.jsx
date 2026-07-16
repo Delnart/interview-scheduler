@@ -7,8 +7,10 @@ export default function RecruiterCalendarPage() {
   const { id } = useParams();
   const [data, setData] = useState(null);
 
+  const load = () => api.get(`/calendar/recruiter/${id}`).then((res) => setData(res.data));
+
   useEffect(() => {
-    api.get(`/calendar/recruiter/${id}`).then((res) => setData(res.data));
+    load();
   }, [id]);
 
   if (!data) return <p className="muted">Завантаження...</p>;
@@ -17,7 +19,7 @@ export default function RecruiterCalendarPage() {
     <div>
       <Link to="/admin/calendar" className="muted">&larr; До загального календаря</Link>
       <h1>Календар: {data.recruiter.fullName}</h1>
-      <InterviewCalendar events={data.events} />
+      <InterviewCalendar events={data.events} onChanged={load} />
     </div>
   );
 }

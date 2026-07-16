@@ -5,6 +5,8 @@ import parse from 'date-fns/parse';
 import startOfWeek from 'date-fns/startOfWeek';
 import getDay from 'date-fns/getDay';
 import { uk } from 'date-fns/locale';
+import api, { errorMessage } from '../api.js';
+import { useAuth } from '../AuthContext.jsx';
 
 const locales = { uk };
 
@@ -49,7 +51,79 @@ function telegramUrl(tag) {
   return /^[A-Za-z0-9_]{2,64}$/.test(handle) ? `https://t.me/${handle}` : null;
 }
 
-function EventDetailsModal({ event, onClose }) {
+// Admin-only editor: swap the interview's main/secondary recruiter for another one.
+function RecruiterReplacer({ slot, onChanged }) {
+  const [recruiters, setRecruiters] = useState(null);
+  const [mainId, setMainId] = useState(slot.mainRecruiter.id);
+  const [secId, setSecId] = useState(slot.secondaryRecruiter.id);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    api
+      .get('/recruiters')
+      .then((res) => setRecruiters(res.data.recruiters.filter((x) => x.active)))
+      .catch(() => setRecruiters([]));
+  }, []);
+
+  if (!recruiters) {
+    return <div>{slot.mainRecruiter.fullName} + {slot.secondaryRecruiter.fullName}</div>;
+  }
+
+  // Keep the currently-assigned recruiters selectable even if they went inactive.
+  const options = [...recruiters];
+  for (const cur of [slot.mainRecruiter, slot.secondaryRecruiter]) {
+    if (!options.some((o) => o.id === cur.id)) options.push({ id: cur.id, fullName: cur.fullName });
+  }
+  options.sort((a, b) => a.fullName.localeCompare(b.fullName, 'uk'));
+
+  const changed = mainId !== slot.mainRecruiter.id || secId !== slot.secondaryRecruiter.id;
+  const invalid = mainId === secId;
+
+  async function save() {
+    setSaving(true);
+    setError('');
+    try {
+      const body = {};
+      if (mainId !== slot.mainRecruiter.id) body.mainRecruiterId = mainId;
+      if (secId !== slot.secondaryRecruiter.id) body.secondaryRecruiterId = secId;
+      await api.put(`/slots/${slot.id}/recruiters`, body);
+      onChanged();
+    } catch (err) {
+      setError(errorMessage(err));
+      setSaving(false);
+    }
+  }
+
+  const select = (value, setValue, label) => (
+    <select value={value} onChange={(e) => setValue(e.target.value)} aria-label={label} disabled={saving}>
+      {options.map((o) => (
+        <option key={o.id} value={o.id}>{o.fullName}</option>
+      ))}
+    </select>
+  );
+
+  return (
+    <div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+        {select(mainId, setMainId, 'Основний рекрутер')}
+        <span>+</span>
+        {select(secId, setSecId, 'Другий рекрутер')}
+        {changed && (
+          <button className="btn btn-sm btn-primary" type="button" disabled={saving || invalid} onClick={save}>
+            {saving ? 'Збереження…' : 'Замінити'}
+          </button>
+        )}
+      </div>
+      {invalid && <p className="field-error">Рекрутери мають бути різними.</p>}
+      {error && <p className="field-error">{error}</p>}
+    </div>
+  );
+}
+
+function EventDetailsModal({ event, onClose, onChanged }) {
+  const { user } = useAuth();
+
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
@@ -79,7 +153,17 @@ function EventDetailsModal({ event, onClose }) {
 
         <div className="modal-section">
           <div className="modal-label">Рекрутери</div>
-          <div>{r.mainRecruiter.fullName} + {r.secondaryRecruiter.fullName}</div>
+          {user?.isAdmin ? (
+            <RecruiterReplacer
+              slot={r}
+              onChanged={() => {
+                onChanged?.();
+                onClose();
+              }}
+            />
+          ) : (
+            <div>{r.mainRecruiter.fullName} + {r.secondaryRecruiter.fullName}</div>
+          )}
         </div>
 
         {c ? (
@@ -139,7 +223,7 @@ function EventDetailsModal({ event, onClose }) {
   );
 }
 
-export default function InterviewCalendar({ events, defaultView = 'week' }) {
+export default function InterviewCalendar({ events, defaultView = 'week', onChanged }) {
   const [date, setDate] = useState(new Date());
   const [view, setView] = useState(defaultView);
   const [selected, setSelected] = useState(null);
@@ -185,7 +269,7 @@ export default function InterviewCalendar({ events, defaultView = 'week' }) {
           return lines.filter(Boolean).join('\n');
         }}
       />
-      {selected && <EventDetailsModal event={selected} onClose={() => setSelected(null)} />}
+      {selected && <EventDetailsModal event={selected} onClose={() => setSelected(null)} onChanged={onChanged} />}
     </div>
   );
 }

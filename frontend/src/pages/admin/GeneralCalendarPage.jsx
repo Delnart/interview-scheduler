@@ -10,12 +10,13 @@ export default function GeneralCalendarPage() {
   const [recruiters, setRecruiters] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // Everyone sees every booked interview across all OPs, so all recruiters can
+  // see who is interviewing and when — not just their own bookings.
+  const loadEvents = () => api.get('/calendar/general').then((res) => setEvents(res.data.events));
+
   useEffect(() => {
     async function load() {
-      // Everyone sees every booked interview across all OPs, so all recruiters can
-      // see who is interviewing and when — not just their own bookings.
-      const res = await api.get('/calendar/general');
-      setEvents(res.data.events);
+      await loadEvents();
       if (user.isAdmin) {
         const r = await api.get('/recruiters');
         setRecruiters(r.data.recruiters.filter((x) => x.active));
@@ -42,7 +43,7 @@ export default function GeneralCalendarPage() {
         </div>
       )}
 
-      <InterviewCalendar events={events} />
+      <InterviewCalendar events={events} onChanged={loadEvents} />
     </div>
   );
 }
