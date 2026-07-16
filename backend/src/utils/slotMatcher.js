@@ -94,12 +94,7 @@ async function generateMatchedSlotsForOp(opCode, windowDays = DEFAULT_WINDOW_DAY
   const { main } = await getTeamAssignments(opCode);
   const partners = await getGlobalTeamMembers();
   const validKeys = new Set();
-
-  const insertStmt = db.prepare(
-    `INSERT INTO matched_slots (id, op_code, main_recruiter_id, secondary_recruiter_id, start_time, end_time, status)
-     VALUES (?, ?, ?, ?, ?, ?, 'open')
-     ON CONFLICT(op_code, main_recruiter_id, secondary_recruiter_id, start_time) DO NOTHING`
-  );
+  const rowsToInsert = [];
 
   for (const mainId of main) {
     const freeMain = await freeIntervalsFor(mainId);
@@ -113,20 +108,40 @@ async function generateMatchedSlotsForOp(opCode, windowDays = DEFAULT_WINDOW_DAY
       for (const slot of slots) {
         const startIso = slot.start.toISOString();
         const endIso = slot.end.toISOString();
-        validKeys.add(`${mainId}|${secId}|${startIso}`);
-        await insertStmt.run(uuid(), opCode, mainId, secId, startIso, endIso);
+        const key = `${mainId}|${secId}|${startIso}`;
+        if (validKeys.has(key)) continue;
+        validKeys.add(key);
+        rowsToInsert.push([uuid(), opCode, mainId, secId, startIso, endIso]);
       }
     }
+  }
+
+  // Bulk insert in chunks: one statement per ~500 rows instead of one round trip per
+  // slot, which dominates the pass on a remote Postgres.
+  const CHUNK = 500;
+  for (let i = 0; i < rowsToInsert.length; i += CHUNK) {
+    const chunk = rowsToInsert.slice(i, i + CHUNK);
+    const values = chunk.map(() => `(?, ?, ?, ?, ?, ?, 'open')`).join(', ');
+    await db
+      .prepare(
+        `INSERT INTO matched_slots (id, op_code, main_recruiter_id, secondary_recruiter_id, start_time, end_time, status)
+         VALUES ${values}
+         ON CONFLICT(op_code, main_recruiter_id, secondary_recruiter_id, start_time) DO NOTHING`
+      )
+      .run(...chunk.flat());
   }
 
   // Remove stale 'open' slots (no longer supported by current availability/config)
   const openSlots = await db
     .prepare(`SELECT id, main_recruiter_id, secondary_recruiter_id, start_time FROM matched_slots WHERE op_code = ? AND status = 'open'`)
     .all(opCode);
-  const deleteStmt = db.prepare('DELETE FROM matched_slots WHERE id = ?');
-  for (const row of openSlots) {
-    const key = `${row.main_recruiter_id}|${row.secondary_recruiter_id}|${row.start_time}`;
-    if (!validKeys.has(key)) await deleteStmt.run(row.id);
+  const staleIds = openSlots
+    .filter((row) => !validKeys.has(`${row.main_recruiter_id}|${row.secondary_recruiter_id}|${row.start_time}`))
+    .map((row) => row.id);
+  if (staleIds.length) {
+    // status recheck: a slot from the SELECT above may have been booked meanwhile —
+    // deleting it would cascade-delete the committed booking.
+    await db.prepare(`DELETE FROM matched_slots WHERE id = ANY(?) AND status = 'open'`).run(staleIds);
   }
 }
 

@@ -90,12 +90,9 @@ async function bootstrapIfEmpty() {
 async function start() {
   await db.init();
   await bootstrapIfEmpty();
-  // Build the initial set of matched slots on boot.
-  try {
-    await slotMatcher.regenerateAll();
-  } catch (err) {
-    console.error('Помилка під час генерації слотів при старті:', err.message);
-  }
+  // Build the initial set of matched slots in the background — don't hold the HTTP
+  // port hostage to a full regeneration pass (matters on cold starts).
+  slotMatcher.scheduleRegen();
 
   // Periodically refresh matched slots so newly-elapsed time windows roll forward
   // and Google Calendar busy-time changes get picked up.
