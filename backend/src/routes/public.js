@@ -7,6 +7,7 @@ const slotMatcher = require('../utils/slotMatcher');
 const googleCalendar = require('../utils/googleCalendar');
 const telegram = require('../utils/telegram');
 const asyncHandler = require('../utils/asyncHandler');
+const withSlotLock = require('../utils/slotLock');
 
 const router = express.Router();
 
@@ -115,38 +116,8 @@ router.post('/bookings', bookingLimiter, asyncHandler(async (req, res) => {
   });
   if (!booked) return res.status(409).json({ error: 'Цей слот вже зайнятий. Оберіть інший час.' });
 
-  // Best-effort Google Calendar event creation for both recruiters
-  const op = await db.prepare('SELECT name FROM op_codes WHERE code = ?').get(slot.op_code);
-  const groupLabel = op ? op.name : slot.op_code;
-  const start = new Date(slot.start_time);
-  const end = new Date(slot.end_time);
-  const summary = `Співбесіда (відбір кураторів) — група ${groupLabel}${fullName ? ` — ${fullName}` : ''}`;
-  const description = [
-    `Група: ${groupLabel}`,
-    fullName ? `Кандидат: ${fullName}` : null,
-    `Email: ${email}`,
-    `Telegram: ${telegramTag}`,
-    groupName ? `Навчальна група: ${groupName}` : null,
-  ]
-    .filter(Boolean)
-    .join('\n');
-
-  try {
-    const [mainEventId, secEventId] = await Promise.all([
-      googleCalendar.createEvent(slot.main_recruiter_id, { summary, description, start, end }),
-      googleCalendar.createEvent(slot.secondary_recruiter_id, { summary, description, start, end }),
-    ]);
-    if (mainEventId || secEventId) {
-      await db.prepare('UPDATE matched_slots SET google_event_id_main = ?, google_event_id_secondary = ? WHERE id = ?').run(
-        mainEventId,
-        secEventId,
-        matchedSlotId
-      );
-    }
-  } catch (err) {
-    console.error('Failed to create Google Calendar events for booking', bookingId, err.message);
-  }
-
+  // Respond as soon as the booking is committed — Google Calendar and Telegram are
+  // best-effort side effects and run in the background.
   res.status(201).json({
     ok: true,
     booking: {
@@ -164,28 +135,80 @@ router.post('/bookings', bookingLimiter, asyncHandler(async (req, res) => {
     .catch((err) => console.error('Не вдалося надіслати сповіщення в Telegram:', err.message));
 
   // Best-effort cleanup, in the background with its own error handling (the booking
-  // is already committed, so a failure here must not surface as an error).
+  // is already committed, so a failure here must not surface as an error). Work on a
+  // given slot is serialized via withSlotLock so a concurrent rebook/replace on the
+  // same slot can't interleave with the Google-event bookkeeping.
   (async () => {
+    // Google Calendar events for both recruiters.
+    const op = await db.prepare('SELECT name FROM op_codes WHERE code = ?').get(slot.op_code);
+    const event = googleCalendar.buildInterviewEvent({
+      groupLabel: op ? op.name : slot.op_code,
+      fullName,
+      email,
+      telegramTag,
+      groupName,
+      start: new Date(slot.start_time),
+      end: new Date(slot.end_time),
+    });
+    try {
+      await withSlotLock(matchedSlotId, async () => {
+        const cur = await db.prepare('SELECT status FROM matched_slots WHERE id = ?').get(matchedSlotId);
+        if (!cur || cur.status !== 'booked') return; // already rebooked away — don't create events
+        const [mainEventId, secEventId] = await Promise.all([
+          googleCalendar.createEvent(slot.main_recruiter_id, event),
+          googleCalendar.createEvent(slot.secondary_recruiter_id, event),
+        ]);
+        if (mainEventId || secEventId) {
+          const w = await db
+            .prepare(
+              `UPDATE matched_slots SET google_event_id_main = ?, google_event_id_secondary = ?
+               WHERE id = ? AND status = 'booked'`
+            )
+            .run(mainEventId, secEventId, matchedSlotId);
+          if (w.changes === 0) {
+            // Slot got cancelled while we were creating — don't leave ghost events.
+            await googleCalendar.deleteEvent(slot.main_recruiter_id, mainEventId);
+            await googleCalendar.deleteEvent(slot.secondary_recruiter_id, secEventId);
+          }
+        }
+      });
+    } catch (err) {
+      console.error('Failed to create Google Calendar events for booking', bookingId, err.message);
+    }
+
     // "Change time": rebooking with the same Telegram cancels the candidate's previous
     // future interview(s), frees that time and removes the stale Google Calendar events.
+    // Only bookings strictly OLDER than this one count as "prior" — otherwise two rapid
+    // rebookings could each cancel the other, leaving the candidate with nothing.
     const prior = await db
       .prepare(
-        `SELECT ms.id, ms.main_recruiter_id, ms.secondary_recruiter_id,
-                ms.google_event_id_main, ms.google_event_id_secondary
+        `SELECT ms.id
          FROM matched_slots ms
          JOIN bookings b ON b.matched_slot_id = ms.id
          WHERE ms.status = 'booked'
            AND ms.id != ?
            AND ms.start_time > ?
-           AND lower(b.telegram_tag) = lower(?)`
+           AND lower(b.telegram_tag) = lower(?)
+           AND b.created_at < (SELECT created_at FROM bookings WHERE id = ?)`
       )
-      .all(matchedSlotId, new Date().toISOString(), telegramTag);
+      .all(matchedSlotId, new Date().toISOString(), telegramTag, bookingId);
 
     for (const p of prior) {
-      await googleCalendar.deleteEvent(p.main_recruiter_id, p.google_event_id_main);
-      await googleCalendar.deleteEvent(p.secondary_recruiter_id, p.google_event_id_secondary);
-      await db.prepare(`UPDATE matched_slots SET status = 'cancelled' WHERE id = ?`).run(p.id);
-      await db.prepare('DELETE FROM bookings WHERE matched_slot_id = ?').run(p.id);
+      await withSlotLock(p.id, async () => {
+        // Re-read under the lock: status/event ids may have changed since the SELECT.
+        const cur = await db.prepare('SELECT * FROM matched_slots WHERE id = ?').get(p.id);
+        if (!cur || cur.status !== 'booked') return;
+        // Reply to the old booking's Telegram message ("час змінено") while its booking
+        // row still exists — the notification needs the candidate context.
+        await telegram
+          .notifyRescheduled(p.id, matchedSlotId)
+          .catch((err) => console.error('Не вдалося надіслати сповіщення про перенесення:', err.message));
+        await googleCalendar.deleteEvent(cur.main_recruiter_id, cur.google_event_id_main);
+        await googleCalendar.deleteEvent(cur.secondary_recruiter_id, cur.google_event_id_secondary);
+        // 'cancelled' also stops the "5 minutes before" reminder (it only looks at booked slots).
+        await db.prepare(`UPDATE matched_slots SET status = 'cancelled' WHERE id = ?`).run(p.id);
+        await db.prepare('DELETE FROM bookings WHERE matched_slot_id = ?').run(p.id);
+      });
     }
 
     // Regenerate everywhere: the global partner pool means this change can affect any

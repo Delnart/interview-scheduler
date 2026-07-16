@@ -141,6 +141,9 @@ CREATE INDEX IF NOT EXISTS idx_matched_slots_secondary ON matched_slots(secondar
 ALTER TABLE op_codes ADD COLUMN IF NOT EXISTS telegram_thread_id TEXT;
 -- Guards the "5 minutes before" Telegram reminder so it fires at most once per slot.
 ALTER TABLE matched_slots ADD COLUMN IF NOT EXISTS reminder_sent INTEGER NOT NULL DEFAULT 0;
+-- Telegram message id of the "new booking" notification, so a later reschedule can
+-- reply to that exact message ("час змінено").
+ALTER TABLE matched_slots ADD COLUMN IF NOT EXISTS telegram_message_id TEXT;
 `);
 
   // One-time migration: bring old DBs that stored a 60-minute slot duration in line

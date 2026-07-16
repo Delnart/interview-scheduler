@@ -123,6 +123,22 @@ async function getBusyIntervals(recruiterId, timeMin, timeMax) {
   }
 }
 
+// Composes the standard interview event (summary/description/times) from a slot's
+// booking data. Shared by the booking flow and admin recruiter replacement.
+function buildInterviewEvent({ groupLabel, fullName, email, telegramTag, groupName, start, end }) {
+  const summary = `Співбесіда (відбір кураторів) — група ${groupLabel}${fullName ? ` — ${fullName}` : ''}`;
+  const description = [
+    `Група: ${groupLabel}`,
+    fullName ? `Кандидат: ${fullName}` : null,
+    `Email: ${email}`,
+    `Telegram: ${telegramTag}`,
+    groupName ? `Навчальна група: ${groupName}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return { summary, description, start, end };
+}
+
 // Creates a calendar event on the recruiter's primary calendar. Returns the event id, or null.
 async function createEvent(recruiterId, { summary, description, start, end, attendees = [] }) {
   const client = await getRecruiterClient(recruiterId);
@@ -168,6 +184,7 @@ module.exports = {
   clearTokens,
   isConnected,
   getBusyIntervals,
+  buildInterviewEvent,
   createEvent,
   deleteEvent,
 };

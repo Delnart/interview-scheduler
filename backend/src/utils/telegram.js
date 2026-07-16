@@ -44,9 +44,10 @@ function formatTimeRange(startIso, endIso) {
   return `${fmt.format(new Date(startIso))}–${fmt.format(new Date(endIso))}`;
 }
 
-// Low-level send. Best-effort: logs and returns false on any failure, never throws.
-async function sendMessage({ threadId, text }) {
-  if (!isConfigured()) return false;
+// Low-level send. Best-effort: logs and returns null on any failure, never throws.
+// On success returns the sent message's id (truthy), so callers can reply to it later.
+async function sendMessage({ threadId, text, replyTo }) {
+  if (!isConfigured()) return null;
   const body = {
     chat_id: process.env.TELEGRAM_CHAT_ID,
     text,
@@ -58,6 +59,11 @@ async function sendMessage({ threadId, text }) {
   if (threadId !== null && threadId !== undefined && String(threadId).trim() !== '') {
     body.message_thread_id = Number(threadId);
   }
+  if (replyTo) {
+    body.reply_to_message_id = Number(replyTo);
+    // Old message may have been deleted — still deliver the notification.
+    body.allow_sending_without_reply = true;
+  }
   try {
     const resp = await fetch(`${API_BASE}/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: 'POST',
@@ -67,12 +73,13 @@ async function sendMessage({ threadId, text }) {
     if (!resp.ok) {
       const detail = await resp.text().catch(() => '');
       console.error(`Telegram sendMessage failed (${resp.status}): ${detail}`);
-      return false;
+      return null;
     }
-    return true;
+    const data = await resp.json().catch(() => null);
+    return data?.result?.message_id ?? null;
   } catch (err) {
     console.error('Telegram sendMessage error:', err.message);
-    return false;
+    return null;
   }
 }
 
@@ -81,6 +88,7 @@ async function getSlotContext(slotId) {
   return db
     .prepare(
       `SELECT ms.start_time AS start_time, ms.end_time AS end_time,
+              ms.telegram_message_id AS message_id,
               oc.name AS op_name, oc.telegram_thread_id AS thread_id,
               mr.full_name AS main_name, mr.telegram AS main_tg,
               sr.full_name AS sec_name, sr.telegram AS sec_tg,
@@ -123,7 +131,30 @@ async function notifyNewBooking(slotId) {
     `🕐 ${formatTimeRange(ctx.start_time, ctx.end_time)}\n` +
     `👤 Кандидат: ${candidateLine(ctx)}\n` +
     `🧑‍💼 Рекрутери: ${recruiterLine(ctx)}`;
-  return sendMessage({ threadId: ctx.thread_id, text });
+  const messageId = await sendMessage({ threadId: ctx.thread_id, text });
+  if (messageId) {
+    // Remember the message so a later reschedule can reply to it.
+    await db.prepare(`UPDATE matched_slots SET telegram_message_id = ? WHERE id = ?`).run(String(messageId), slotId);
+  }
+  return Boolean(messageId);
+}
+
+// The candidate re-applied and picked a new time: reply to the old booking's message
+// in its thread so the recruiters see that this interview is no longer happening.
+// Call BEFORE the old slot's booking row is deleted (context needs it).
+async function notifyRescheduled(oldSlotId, newSlotId) {
+  if (!isConfigured()) return false;
+  const [oldCtx, newCtx] = await Promise.all([getSlotContext(oldSlotId), getSlotContext(newSlotId)]);
+  if (!oldCtx || !hasThread(oldCtx)) return false;
+  const text =
+    `🔁 <b>Час змінено — ${escapeHtml(oldCtx.op_name)}</b>\n` +
+    `👤 Кандидат ${candidateLine(oldCtx)} заповнив(-ла) заявку повторно.\n` +
+    (newCtx
+      ? `🗓 Новий час: ${formatDate(newCtx.start_time)}, ${formatTimeRange(newCtx.start_time, newCtx.end_time)}\n`
+      : '') +
+    `❌ Ця співбесіда не відбудеться, нагадування вимкнено.`;
+  const sent = await sendMessage({ threadId: oldCtx.thread_id, text, replyTo: oldCtx.message_id });
+  return Boolean(sent);
 }
 
 // Notify the OP's thread that an interview starts in ~5 minutes.
@@ -167,6 +198,7 @@ module.exports = {
   isConfigured,
   sendMessage,
   notifyNewBooking,
+  notifyRescheduled,
   notifyReminder,
   sendDueReminders,
 };
