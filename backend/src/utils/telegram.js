@@ -3,6 +3,7 @@
 // before it starts. Entirely optional — disabled (and harmless) when the bot token /
 // chat id aren't configured.
 const db = require('../db');
+const { computeReminderDelay } = require('./reminderDelay');
 
 const API_BASE = 'https://api.telegram.org';
 const TZ = process.env.TIMEZONE || 'Europe/Kyiv';
@@ -194,6 +195,58 @@ async function sendDueReminders() {
   }
 }
 
+// When the soonest booked, not-yet-reminded slot's reminder is due (start_time - 5min),
+// in epoch ms — or null if nothing is pending. Drives the adaptive sleep below.
+async function nextReminderDueAt() {
+  const row = await db
+    .prepare(
+      `SELECT min(ms.start_time) AS next
+       FROM matched_slots ms
+       JOIN op_codes oc ON oc.code = ms.op_code
+       WHERE ms.status = 'booked' AND ms.reminder_sent = 0
+         AND oc.telegram_thread_id IS NOT NULL
+         AND ms.start_time > ?`
+    )
+    .get(new Date().toISOString());
+  if (!row || !row.next) return null;
+  return new Date(row.next).getTime() - 5 * 60 * 1000;
+}
+
+// Adaptive reminder loop: send anything due, then sleep until the next reminder instead
+// of polling every minute (which pinned the DB compute awake and drained the quota).
+// A single timer at a time; bumpReminders() re-arms it after a booking.
+let reminderTimer = null;
+
+async function reminderTick() {
+  reminderTimer = null;
+  try {
+    await sendDueReminders();
+  } catch (err) {
+    console.error('Помилка нагадувань Telegram:', err.message);
+  }
+  let delay;
+  try {
+    delay = computeReminderDelay(await nextReminderDueAt(), Date.now());
+  } catch (err) {
+    console.error('Помилка планування нагадувань:', err.message);
+    delay = 5 * 60 * 1000; // transient DB error — retry soon, but don't hot-loop
+  }
+  reminderTimer = setTimeout(reminderTick, delay);
+}
+
+function startReminders() {
+  if (!isConfigured() || reminderTimer) return;
+  reminderTick();
+}
+
+// Re-arm the loop immediately (e.g. right after a booking) so a freshly-booked slot's
+// reminder isn't missed while the loop is asleep. No-op until startReminders() runs.
+function bumpReminders() {
+  if (!reminderTimer) return;
+  clearTimeout(reminderTimer);
+  reminderTimer = setTimeout(reminderTick, 0);
+}
+
 module.exports = {
   isConfigured,
   sendMessage,
@@ -201,4 +254,6 @@ module.exports = {
   notifyRescheduled,
   notifyReminder,
   sendDueReminders,
+  startReminders,
+  bumpReminders,
 };

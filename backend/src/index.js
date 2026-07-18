@@ -94,18 +94,18 @@ async function start() {
   // port hostage to a full regeneration pass (matters on cold starts).
   slotMatcher.scheduleRegen();
 
-  // Periodically refresh matched slots so newly-elapsed time windows roll forward
-  // and Google Calendar busy-time changes get picked up.
+  // Periodic housekeeping only: roll elapsed windows forward and pick up external Google
+  // Calendar edits. Booking/availability/team changes already trigger their own
+  // scheduleRegen, and reads filter out past slots — so this can be rare. Keeping it
+  // infrequent lets the serverless Postgres compute scale to zero instead of being pinged
+  // every 15 minutes around the clock (which drained the compute quota).
   setInterval(() => {
     slotMatcher.scheduleRegen();
-  }, 15 * 60 * 1000);
+  }, 6 * 60 * 60 * 1000);
 
-  // Send Telegram "5 minutes before" reminders. No-op when Telegram isn't configured.
-  if (telegram.isConfigured()) {
-    setInterval(() => {
-      telegram.sendDueReminders().catch((err) => console.error('Помилка нагадувань Telegram:', err.message));
-    }, 60 * 1000);
-  }
+  // Telegram "5 minutes before" reminders — adaptively scheduled (sleeps until a reminder
+  // is actually due; bookings re-arm it in-process). No-op when Telegram isn't configured.
+  telegram.startReminders();
 
   app.listen(PORT, () => {
     console.log(`API запущено на порті ${PORT}`);

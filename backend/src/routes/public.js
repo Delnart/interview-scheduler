@@ -215,6 +215,9 @@ router.post('/bookings', bookingLimiter, asyncHandler(async (req, res) => {
     // OP's slots (clear now-stale open slots, re-open freed time). Coalesced + in the
     // background so it never blocks and overlapping triggers collapse into one pass.
     slotMatcher.scheduleRegen();
+    // Re-arm the reminder loop: this booking (or the cancellations above) changed what's
+    // due next, and the loop may be sleeping for hours.
+    telegram.bumpReminders();
   })().catch((err) => console.error('Помилка фонової обробки після бронювання:', err.message));
 }));
 
